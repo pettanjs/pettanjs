@@ -30,8 +30,8 @@
       }
     }).bind(source);
 
-    this._source.addEventListener(eventName,
-      this._internalListener, this._options);
+    this._source.addEventListener(eventName, this._internalListener,
+      this._options);
   }
 
   NativeEventRecord.prototype.setListener = function (externalListener) {
@@ -48,8 +48,23 @@
     }
   }
 
-  function EventRecord () {
+  function EventRecord (handler) {
+    this._handler = handler;
+  }
 
+  EventRecord.prototype.asPromised = function() {
+    var parentArgs = arguments;
+    return new Promise((function (resolve, reject) {
+      try {
+        resolve(this._handler.apply(this, parentArgs));
+      } catch (e) {
+        reject(e);
+      }
+    }).bind(this));
+  }
+
+  EventRecord.prototype.destroy = function () {
+    // destructor does nothing
   }
 
   function BindContext (instance, eventName, context) {
@@ -65,7 +80,7 @@
 
   }
 
-  EmitContext.protoype.queue = function () {
+  EmitContext.prototype.queue = function () {
 
   }
 
@@ -130,72 +145,100 @@
 
   Pettan.prototype.listen = function (eventName, handler) {
     if (typeof eventName !== 'string' || typeof handler === 'undefined') {
+      throw new PettanError('listen', 'Missing or bad parameters', eventName);
+    }
 
+    if (!(eventName in this._customEvents)) {
+      this._customEvents[eventName] = [];
     }
-    if (!(eventName in this.bindings)) {
-      this.bindings[eventName] = [];
-    }
-    this.bindings[eventName].push(handler);
+    var record = new EventRecord(handler);
+    this._customEvents[eventName].push(record);
+    return record;
   };
 
-  Pettan.prototype.emit = function (eventName, data) {
-    var promise = Promise.resolve(data);
-    if (eventName in this.bindings) {
-      for (var i = 0; i < this.bindings[eventName].length; i++) {
-        promise = promise.then(this.bindings[eventName][i]);
-      }
+  Pettan.prototype.emit = function (eventName) {
+    var params = arguments.slice(1);
+    if (typeof eventName !== 'string' || typeof handler === 'undefined') {
+      throw new PettanError('listen', 'Missing or bad parameters', eventName);
     }
-    return promise.catch((function (e) {
-      if (this._errorHandler !== null) {
-        this._errorHandler(e);
-      }
-      // Always rethrow
-      throw e;
-    }).bind(this));
-  };
-
-  // Drop all bindings for event
-  Pettan.prototype.drop = function (eventName) {
-    if (eventName in this.bindings) {
-      delete this.bindings[eventName];
-    }
-    if (eventName in this.nativeBindings) {
-      delete this.nativeBindings[eventName];
-    }
-  };
-
-  Pettan.prototype.rename = function (eventOldName, eventNewName) {
-    if (eventNewName in this.bindings &&
-      this.bindings[eventNewName].length !== 0) {
-
-      throw new Error('Cannot rename to ' + eventNewName + '. ' +
-        'A non-empty listener group with the same name already exists.');
-    }
-    // Find native binding
-    if (eventOldName in this.nativeBindings) {
-      if (eventNewName in this.nativeBindings &&
-        this.nativeBindings[eventNewName].length !== 0) {
-
-        throw new Error('Cannot rename native bindings for ' + eventOldName +
-          ' to ' + eventNewName + '. Naming conflict at target.');
-      }
-      this.nativeBindings[eventOldName].forEach(function (boundObject) {
-        boundObject.eventName = eventNewName;
+    if (eventName in this._customEvents) {
+      return Promise.all(this._customEvents.map(function (eventRecord) {
+        return eventRecord.asPromised.apply(eventRecord, params);
+      })).catch((function (e) {
+        if (this._errorHandler !== null) {
+          this._errorHandler(e);
+        }
+        throw e;
+      }).bind(this)).then(function (results) {
+        return new EmitContext(params, results);
       });
-      this.nativeBindings[eventNewName] = this.nativeBindings[eventOldName];
-      delete this.nativeBindings[eventOldName];
-    }
-    if (eventOldName in this.bindings) {
-      this.bindings[eventNewName] = this.bindings[eventOldName];
-      delete this.bindings[eventOldName];
+    } else {
+      return Promise.resolve(new EmitContext(params, []));
+      // Nothing to apply to
     }
   };
 
-  Pettan.prototype.next = function (value) {
-    return function () {
-      return value;
-    };
+  Pettan.prototype.drop = function (eventName) {
+    // Drop all bindings for event but not native bindings
+    if (eventName in this._customEvents) {
+      this._customEvents.forEach(function (eventRecord) {
+        eventRecord.destroy();
+      });
+      delete this._customEvents[eventName];
+    }
   };
+
+  Pettan.prototype.rename = function (oldEventName, newEventName) {
+    if (typeof oldEventName !== 'string' || typeof newEventName !== 'string') {
+      throw new PettanError('rename', 'Missing or bad parameters',
+        oldEventName);
+    }
+    if (newEventName === oldEventName) {
+      throw new PettanError('rename', 'Cannot rename to the same name',
+        oldEventName);
+    }
+    if (!(oldEventName in this._customEvents)) {
+      throw new PettanError('rename', 'Source event does not exist',
+        oldEventName);
+    }
+    if (newEventName in this._customEvents &&
+      this._customEvents[newEventName].length > 0) {
+
+      throw new PettanError('rename', 'Destination event name already exists',
+        oldEventName);
+    }
+    if (newEventName in this._nativeEvents) {
+      throw new PettanError('rename', 'Destination conflicts with native event',
+        oldEventName);
+    }
+
+    this._customEvents[newEventName] = this._customEvents[oldEventName];
+
+    if (oldEventName in this._nativeEvents) {
+      // This has a corresponding native event so rename that too
+      this._nativeEvents[oldEventName].forEach(function (nativeEventRecord) {
+        nativeEventRecord.setListener((function () {
+          this.emit.apply(this, [newEventName].concate(arguments));
+        }).bind(this))
+      });
+      this._nativeEvents[newEventName] = this._nativeEvents[oldEventName];
+      delete this._nativeEvents[oldEventName];
+    }
+
+    delete this._customEvents[oldEventName];
+  };
+
+  // Static function
+  Pettan.wrap = function (f) {
+    return (function () {
+      var params = arguments;
+      f.apply(null, params);
+      return new Promise(function (resolve, reject) {
+        resolve.apply(this, arguments);
+      });
+    });
+  };
+
   exports.Pettan = Pettan;
   exports.PettanError = PettanError;
-})();
+});
