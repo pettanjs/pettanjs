@@ -10,7 +10,7 @@
     factory(root);
   }
 })(this, function (exports) {
-  function PettanError (context, method, message, eventName) {
+  function PettanError (method, message, eventName) {
     this.message = '[' + method + ']' +  (typeof eventName !== 'undefined' ?
       ('(' + eventName + '): ' + message) : message);
     this.stack = Error().stack;
