@@ -157,7 +157,7 @@
   };
 
   Pettan.prototype.emit = function (eventName) {
-    var params = arguments.slice(1);
+    var params = Array.prototype.slice.apply(arguments, [1]);
     if (typeof eventName !== 'string' || typeof handler === 'undefined') {
       throw new PettanError('listen', 'Missing or bad parameters', eventName);
     }
