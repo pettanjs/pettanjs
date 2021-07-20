@@ -102,6 +102,7 @@
     options) {
 
     if (typeof item === 'undefined' ||
+      item === null ||
       typeof nativeEventName !== 'string' ||
       typeof pettanEventName !== 'string') {
 
@@ -120,7 +121,11 @@
     var record = new NativeEventRecord(item, nativeEventName, options);
     this._nativeEvents[pettanEventName].push(record);
     record.setListener((function () {
-      this.emit.apply(this, [pettanEventName].concat(arguments));
+      var newArgs = [pettanEventName];
+      for (var i = 0; i < arguments.length; i++) {
+        newArgs.push(arguments[i]);
+      }
+      this.emit.apply(this, newArgs);
     }).bind(this));
 
     return new BindContext(this, pettanEventName, record);
@@ -158,12 +163,12 @@
 
   Pettan.prototype.emit = function (eventName) {
     var params = Array.prototype.slice.apply(arguments, [1]);
-    if (typeof eventName !== 'string' || typeof handler === 'undefined') {
-      throw new PettanError('listen', 'Missing or bad parameters', eventName);
+    if (typeof eventName !== 'string') {
+      throw new PettanError('emit', 'Missing or bad parameters', eventName);
     }
     if (eventName in this._customEvents) {
-      return Promise.all(this._customEvents.map(function (eventRecord) {
-        return eventRecord.asPromised.apply(eventRecord, params);
+      return Promise.all(this._customEvents[eventName].map(function (record) {
+        return EventRecord.prototype.asPromised.apply(record, params);
       })).catch((function (e) {
         if (this._errorHandler !== null) {
           this._errorHandler(e);
